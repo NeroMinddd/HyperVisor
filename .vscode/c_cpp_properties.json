@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "name": "Windows-WDK-IntelliSense",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/Users/yourname/wdk_headers/km",
+                "/Users/yourname/wdk_headers/shared"
+            ],
+            "defines": [
+                "_AMD64_",
+                "_WIN64",
+                "_KERNEL_MODE",
+                "DBG=1"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64"
+        }
+    ],
+    "version": 4
+}

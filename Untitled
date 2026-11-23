@@ -1,0 +1,15 @@
+#include <ntddk.h>
+
+NSTATUS DriverEntry(PRDIVER_OBJECT DriverObject, PUNICODE_STRING registryPath)
+{
+  NSTATUS nttatus = STATUS_SUCCESS;
+  UINT64 Id = 0;
+  PRDIVER_OBJECT DriverObject = null;
+  UNICODE_STRING DriverName, DosDeviceName;
+
+  RtlInitUnicodeodeString(&DriverName, L"\\Device\\MyHypervisorDevice");
+  RtlInitUnicodeString(&DosDeviceName,  L"\\DosDevices\\MyHypervisorDevice")
+
+  :
+
+
