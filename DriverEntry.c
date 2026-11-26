@@ -5,12 +5,12 @@
 #define  IA32_FEATURE_CONTROL_MSR 0x3A
 #define  IA32_FEATURE_CONTROL_LOCK_BIT (1 << 0)
 #define  IA32_FEATURE_CONTROL_VMX_OUTSIDE_SMX (1 << 2)
+#define  IA32_VMX_CR0_FIXED0 (0x486)
+#define  IA32_VMX_CR0_FIXED1 (0x487) 
+#define  IA32_VMX_CR4_FIXED0 (0x488)
+#define  IA32_VMX_CR4_FIXED1 (0x489)
 
 #define PAGE_SIZE 4096
-
-PVCPU_DATA VcpuDataArray = NULL;
-ULONG proccessorCount = 0;
-
 
 typedef struct _VCPU_data {
     PVOID VmxonVa;
@@ -19,6 +19,8 @@ typedef struct _VCPU_data {
     PHYSICAL_ADDRESS VmcsPa;
 } Vcpu, *PVCPU_DATA;
 
+PVCPU_DATA VcpuDataArray = NULL;
+int proccessorCount = 0;
 
 bool Cpuid_Check()
 {
@@ -28,6 +30,20 @@ bool Cpuid_Check()
     bool check_virt = (cpuInfo[2] & (1U << 5)) != 0;
      return check_virt;
     
+}
+
+NTSTATUS checkControlRegisters(){
+    ULONG_PTR cr0 = __readcr0();
+    cr0 |= __readmsr(IA32_VMX_CR0_FIXED0);
+    cr0 &= __readmsr(IA32_VMX_CR0_FIXED1);
+    __writecr0(cr0);
+
+    ULONG_PTR cr4 = __readcr4();
+    cr4 |= __readmsr(IA32_VMX_CR4_FIXED0);
+    cr4 &= __readmsr(IA32_VMX_CR4_FIXED1);
+    __writecr4(cr4);
+    
+    return STATUS_SUCCESS;
 }
 
 bool IA32_FEATURE_CONTROL(){
@@ -48,15 +64,15 @@ bool IA32_FEATURE_CONTROL(){
    }
 }
 
-int AllocateMemory(PVCPU_DATA Vcpu){
-    PVOID vmxonVA = MmAllocateContiguousMemorySpecifyCache(PAGE_SIZE, 0, -1, 0, MmCached);
+NTSTATUS AllocateMemory(PVCPU_DATA Vcpu){
+    PVOID vmxonVa = MmAllocateContiguousMemorySpecifyCache(PAGE_SIZE, 0, -1, 0, MmCached);
 
-    PVOID vmcsVA = MmAllocateContiguousMemorySpecifyCache(PAGE_SIZE, 0, -1, 0, MmCached);
+    PVOID vmcsVa = MmAllocateContiguousMemorySpecifyCache(PAGE_SIZE, 0, -1, 0, MmCached);
 
     if(!vmxonVA || !vmcsVA){
-        if(vmxonVA) MmFreeContiguousMemorySpecifyCache(vmxonVA, PAGE_SIZE, MmCached);
+        if(vmxonVa) MmFreeContiguousMemorySpecifyCache(vmxonVa, PAGE_SIZE, MmCached);
         
-        if(vmcsVA) MmFreeContiguousMemorySpecifyCache(vmcs, PAGE_SIZE, MmCached);
+        if(vmcsVa) MmFreeContiguousMemorySpecifyCache(vmcsVa, PAGE_SIZE, MmCached);
 
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -66,41 +82,43 @@ int AllocateMemory(PVCPU_DATA Vcpu){
 
     
 
-    UINT32 revID = (UINT32)(__readmsr(0x480) & (0x7FFFFFFF))
+    UINT32 revID = (UINT32)(__readmsr(0x480) & (0x7FFFFFFF));
 
-    *(UINT32*)vmxonVA = revID;
-    *(UINT32*)vmcsVA = revID;
+    *(UINT32*)vmxonVa = revID;
+    *(UINT32*)vmcsVa = revID;
 
-    VCpu->VmxonVa = vmxonVA;
-    VCpu->VmxonPa = MmGetPhysicalAddress(VmxonVa);
+    Vcpu->VmxonVa = vmxonVa;
+    Vcpu->VmxonPa = MmGetPhysicalAddress(VmxonVa);
 
-    VCpu->VmcsVa = vmcsVA;
-    VCpu->VmcsPa = MmGetPhysicalAddress(vmcsVa);
+    Vcpu->VmcsVa = vmcsVa;
+    Vcpu->VmcsPa = MmGetPhysicalAddress(vmcsVa);
 
     return STATUS_SUCCESS;
 
 }
 
-int free_memory(PVCPU_DATA){
-    if(Vcpu->vmxonVa){
-        MmFreeContiguousMemorySpecifyCache(Vcpu->vmxonVa, PAGE_SIZE, MmCached);
-        Vcpu->vmxonPa = nullptr;
-        Vcpu->vmxonVa = nullptr;
+void free_memory(PVCPU_DATA Vcpu){
+    if(Vcpu->VmxonVa){
+        MmFreeContiguousMemorySpecifyCache(Vcpu->VmxonVa, PAGE_SIZE, MmCached);
+        Vcpu->VmxonPa.QuadPart = 0LL;
+        Vcpu->VmxonVa = NULL;
     }
 
     if(Vcpu->VmcsVa){
-        MmFreeContiguousMemorySpecifyCache(Vcpu->vmcxVa, PAGE_SIZE, MmCached);
-        Vcpu->vmcsPa = nullptr;
-        Vcpu->vmcsVa = nullptr;
+        MmFreeContiguousMemorySpecifyCache(Vcpu->VmcsVa, PAGE_SIZE, MmCached);
+        Vcpu->VmcsPa.QuadPart = 0LL;
+        Vcpu->VmcsVa = NULL;
     }
 }
 
-int sincForEveryCore(VCPU_DATA) {
-    ULONG proccessorCount =  KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+NTSTATUS sincForEveryCore(void) {
+    NTSTATUS status = STATUS_SUCCESS;
+    proccessorCount = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
 
-    PVCPU_DATA vcpudDataArray = (PVCPU_DATA) ExAllocatePool(
-        POOL_FLAG_NON_PAGED,
-        proccessorCount * sizeof(VCPU_DATA),
+    VcpuDataArray = (PVCPU_DATA)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED 
+         POOL_FLAG_ZERO_ALLOCATION,
+        (SIZE_T)proccessorCount * sizeof(Vcpu),
         'VCPU'
     );
 
@@ -109,28 +127,44 @@ int sincForEveryCore(VCPU_DATA) {
     }
 
     for (int i = 0; i < proccessorCount; i++){
-        NTSTATUS success = AllocateMemory(&proccessorCount[i]);
-        if(!NT_SUCCESS(success)){
-            for (int i = 0; i < proccessorCount; i++){
-                free_memory(proccessorCount[i]);
+        KAFFINITY Old_Affinity = KeSetSystemAffinityThreadEx(1ULL << i);
+        
+        status = AllocateMemory(&VcpuDataArray[i]);
+
+        NTSTATUS CheckCtrl = checkControlRegisters();
+
+        ULONG CpuID = Cpuid_Check();
+
+        ULONG IA32 = IA32_FEATURE_CONTROL();
+
+        if(!NT_STATUS(status) || !NT_STATUS(CheckCtrl) || !CpuID || !IA32){
+            for(int k = 0; k < proccessorCount; k++){
+                free_memory(&VcpuDataArray[k]);
             }
-            ExFreePoolWithTag(proccessorCount, 'VCPU');
-            proccessorCount = NULL;
+            ExFreePoolWithTag(VcpuDataArray, 'VCPU');
+            VcpuDataArray = NULL;
+            proccessorCount = 0;
+            KeRevertToUserAffinityThreadEx(Old_Affinity);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+        KeRevertToUserAffinityThreadEx(Old_Affinity);
+        
     }
+
+    return STATUS_SUCCESS;
 
 }
 
-void DriverUnload(DriverObject){
-    UNREFFRENCED_PARAMETER(DriverObject);
 
-    if (g_VcpuDataArray) {
-        for (ULONG i = 0; i < g_ProcessorCount; i++) {
-            FreeVcpuMemory(&g_VcpuDataArray[i]);
+void DriverUnload(PDRIVER_OBJECT DriverObject){
+    UNREFERENCED_PARAMETER(DriverObject);
+
+    if (proccessorCount) {
+        for (int i = 0; i < proccessorCount; i++) {
+            free_memory(&VcpuDataArray[i]);
         }
-        ExFreePoolWithTag(g_VcpuDataArray, 'VCPU');
-        g_VcpuDataArray = NULL;
+        ExFreePoolWithTag(VcpuDataArray, 'VCPU');
+        proccessorCount = 0;
     }
 }
 
@@ -138,18 +172,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     UNREFERENCED_PARAMETER(RegistryPath);
 
-    NTSTATUS status = STATUS_SUCCESS;
 
     DriverObject->DriverUnload = DriverUnload;
 
     if(!Cpuid_Check() || !IA32_FEATURE_CONTROL()){
-        DbgPring("VMX is not supported or disapled in BIOS. \n");
+        DbgPrint("VMX is not supported or disapled in BIOS. \n");
 
-        return STATUS_NON_SUPPORTED;
+        return STATUS_NOT_SUPPORTED;
     }
 
     NTSTATUS status = sincForEveryCore();
-    if(!NT_STATUS(status)){
+    if(!NT_SUCCESS(status)){
         DbgPrint("Failed to allocate memory. \n");
         return status;
     }
